@@ -14,7 +14,7 @@ contents[0][1]={id=110,count=1,status=5,slot=1}
 local equipment={left_ring=1,left_ring_bag=0,right_ring=0,right_ring_bag=0}
 local mode_commands={}
 _addon={}
-unpack = table.unpack
+unpack = unpack or table.unpack
 windower={}
 function windower.register_event(event,callback) events[event]=callback end
 function windower.add_to_chat(mode,msg) assert(mode==0);messages[#messages+1]=msg end
