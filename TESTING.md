@@ -2,7 +2,7 @@
 
 ## Current Development Status — 2026-11-02 (beta 1.1)
 
-- **Repository / branches:** `rerorriM-Mirrorer/CleanUp` / `main` documentation-only; initial unverified beta 1.1 is published on `dev`. MogMover remains unchanged.
+- **Repository / branch:** `rerorriM-Mirrorer/CleanUp` / `dev` holds beta 1.1 source; `main` remains documentation-only until live confirmation. MogMover remains unchanged.
 - **Change:** BattleStations-inspired chat-only formatting per the canonical NPCMirror workflow: colored separators/headings/`//cu`/arrows/command syntax/descriptions; bare and invalid command help; restart/unload.
 - **Starting tested source:** local CleanUp beta 1 package; no known-good live version is recorded.
 - **Verification:** Lua 5.4 parser accepted code and test script; mocked Lua execution passed original inventory scenarios plus exact chat-mode and color checks, bare/invalid help, and one-shot lifecycle dispatch. Lua 5.1 compiler and Windower/FFXI live tests not performed.
@@ -29,7 +29,7 @@
 - **Static check:** The Lua source passed a syntax load through locally available Lua 5.4 C-library parser. Lua 5.1/Windower compatibility **has not been independently compiler-verified**.
 - **Mocked execution:** A simulated Windower environment and bag inventory passed checks for default-off, non-mutating preview, home assignment, keeping 2 food in inventory, moving unassigned items to Case, reserve replenishment, temporary get/release, explicit mode-off, busy state suppression, and manually triggered tidy. These are simulated, not FFXI server tests.
 - **Live test:** **NOT PERFORMED.** No real-game behavior or conflict safety confirmed.
-- **Commits/pushes:** Experimental beta 1.1 published to `dev` on 2026-11-02, pending live tests. `main` contains no executable addon; no known-good release tag assigned.
+- **Commits/pushes:** Beta 1.1 source published on `dev`; see delivery message / GitHub history for the final remote commit SHA. No known-good release tag assigned.
 
 ## Priority live test
 
@@ -57,8 +57,9 @@
 
 - **2026-11-02 beta 1.1:** Corrected shared chat/help conventions and added lifecycle commands; local ZIP only, static/mock verified, not live tested.
 
-## Repository initialization — 2026-11-02
+## GitHub publication — 2026-11-02
 
-- `main` initialized with project/workflow/test documentation and no executable addon.
-- `dev` established for initial unverified beta 1.1; source ZIP remains a local artifact.
-- No new Windower/FFXI tests were performed for the GitHub publication.
+- Initialized `main` with project documentation only. Beta 1.1 code, README, WORKFLOW, TESTING and AGENTS are on development branch `dev`.
+- Reviewed the beta 1.1 ZIP and directly re-ran a Lua 5.4 syntax parse: PASS. Existing mocked tests are recorded above, but were not re-run for this publication.
+- This publication does not establish Windower 4 / FFXI live acceptance; do not merge to `main` before live verification.
+- Preserve the original beta 1.1 user-testing package, with its earlier local-package status, as a historical artifact. Updated source docs on `dev` reflect this publication.
