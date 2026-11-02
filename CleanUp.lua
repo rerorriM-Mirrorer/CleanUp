@@ -1,12 +1,14 @@
+-- Beta 2 ring workflow: native Windower equipment operations, live verification pending.
 -- CleanUp beta 1: inventory policy and observed, one-at-a-time transfers.
 -- Derived from the idea of MogMover; this is a separate addon and does not edit MogMover.
 _addon.name = 'CleanUp'
 _addon.author = 'A + ChatGPT; MogMover concept by Kaius @Bahamut'
-_addon.version = '0.1.1-beta1'
+_addon.version = '0.2.0-beta2'
 _addon.commands = {'cu', 'cleanup'}
 
 local config = require('config')
 local res = require('resources')
+local extdata = require('extdata')
 require('chat') -- Windower's string.color() for BattleStations-style chat formatting.
 
 local defaults = {
@@ -28,6 +30,11 @@ local manual = nil -- nil, 'all', or item ID; one manual pass when cleanup mode 
 local last_attempt = 0
 local last_scan = -1
 local alerts = {}
+local ring_job = nil -- independent observed enchantment workflow; blocks general cleanup while active
+local ring_bags = {0,5,6,7,8,10,11,12}
+local ring_sources = {[0]=true,[5]=true,[6]=true,[7]=true}
+local ring_equippable = {[0]=true,[8]=true,[10]=true,[11]=true,[12]=true}
+local RING_NAMES = {['echad ring']=true,['warp ring']=true}
 
 -- Shared chat-only presentation: BattleStations-style colored fragments.
 -- Windower add_to_chat mode 0 leaves embedded string.color() controls intact.
@@ -64,13 +71,21 @@ local function show_help()
     help_line('//cu clear <item> <home|inventory|all>', 'Remove an item rule')
     help_heading('Cleanup')
     help_line('//cu preview', 'Preview moves without changing inventory')
-    help_line('//cu cleanupmode <on|off>', 'Enable/disable automatic cleanup')
+    help_line('//cu', 'Toggle automatic cleanup ON/OFF')
+    help_line('//cu cleanup [on|off]', 'Toggle or explicitly set cleanup')
+    help_line('//cu cleanupmode <on|off>', 'Explicit mode command (legacy)')
     help_line('//cu dump <case|satchel|sack>', 'Choose default home for unassigned items')
     help_line('//cu tidy', 'Run one manual cleanup pass')
     help_line('//cu delay [seconds]', 'Show/set transfer delay (1-30)')
     help_heading('Temporary inventory overrides')
     help_line('//cu get <item> [amount]', 'Retrieve a temporary inventory reserve')
     help_line('//cu release <item>', 'Release a temporary reserve')
+    help_heading('Enchanted rings (Beta)')
+    help_line('//cu ech ring', 'Find, equip and use owned Echad Ring')
+    help_line('//cu warp ring', 'Find, equip and use owned Warp Ring')
+    help_line('//cu use <item name>', 'Explicit use; currently Echad/Warp Ring only')
+    help_line('//cu find <item name>', 'Show closest owned enchantment ring names')
+    help_line('//cu recover', 'Restore equipment after an interrupted ring action')
     help_heading('Information and lifecycle')
     help_line('//cu status', 'Current mode, dump bag, and rule counts')
     help_line('//cu list', 'Show item home and inventory overrides')
@@ -151,6 +166,135 @@ local function find_id(name)
     end
     return nil
 end
+
+-- Superwarp-inspired matching: normalize punctuation/spacing, rank exact/word prefix,
+-- then fuzzy similarity. Unlike Superwarp, an item ACTION must pass a minimum
+-- confidence AND win by a clear margin, or we do not equip/use anything.
+local function norm(s)
+    return clean_name(s):lower():gsub('[^%w]', '')
+end
+local function edit_distance(a,b)
+    local previous={}
+    for j=0,#b do previous[j]=j end
+    for i=1,#a do
+        local row={[0]=i}
+        for j=1,#b do
+            local substitution=(a:sub(i,i)==b:sub(j,j)) and 0 or 1
+            row[j]=math.min(previous[j]+1,row[j-1]+1,previous[j-1]+substitution)
+        end
+        previous=row
+    end
+    return previous[#b]
+end
+local function score_name(query, candidate)
+    local a,b=norm(query),norm(candidate)
+    if a=='' or b=='' then return 0 end
+    if a==b then return 1 end
+    if b:sub(1,#a)==a then return .94 end
+    if b:find(a,1,true) then return .87 end
+    local words={}
+    for token in candidate:lower():gmatch('[%w]+') do words[#words+1]=token end
+    local parts={}
+    for token in query:lower():gmatch('[%w]+') do parts[#parts+1]=token end
+    if #parts>1 and #parts<=#words then
+        local matched=true
+        for i,part in ipairs(parts) do
+            if words[i]:sub(1,#part)~=part then matched=false;break end
+        end
+        if matched then return .92 end
+    end
+    local dist=edit_distance(a,b)
+    return math.max(0,1-dist/math.max(#a,#b))*.85
+end
+
+local function ring_matches(query)
+    local owned={}
+    for _,bag in ipairs(ring_bags) do
+        local info=windower.ffxi.get_bag_info(bag)
+        if info and info.enabled then
+            for slot,item in pairs(read_bag(bag)) do
+                if type(slot)=='number' and type(item)=='table' and item.id and item.id>0 then
+                    local name=label(item.id)
+                    if RING_NAMES[name:lower()] then
+                        local entry=owned[item.id] or {id=item.id,name=name,sources={}}
+                        entry.sources[#entry.sources+1]={bag=bag,slot=slot,status=item.status}
+                        owned[item.id]=entry
+                    end
+                end
+            end
+        end
+    end
+    local ranked={}
+    for _,entry in pairs(owned) do
+        entry.score=score_name(query,entry.name)
+        ranked[#ranked+1]=entry
+    end
+    table.sort(ranked,function(a,b)
+        if a.score~=b.score then return a.score>b.score end
+        return a.name<b.name
+    end)
+    return ranked
+end
+
+local function choose_ring(query, quiet)
+    local ranked=ring_matches(query)
+    if #ranked==0 then
+        if not quiet then say('No Echad Ring or Warp Ring found in accessible bags.') end
+        return nil
+    end
+    local best=ranked[1]
+    if best.score<.67 then
+        if not quiet then say('No confident item match for "'..query..'". Use //cu find <name>.') end
+        return nil
+    end
+    if ranked[2] and best.score-ranked[2].score<.10 then
+        if not quiet then say('Ambiguous item name: '..best.name..' / '..ranked[2].name..'. Please be more specific.') end
+        return nil
+    end
+    return best
+end
+
+local function equip_snapshot(slotname)
+    local all=windower.ffxi.get_items() or {}
+    local eq=all.equipment or {}
+    return {slot=tonumber(eq[slotname]) or 0,bag=tonumber(eq[slotname..'_bag']) or 0}
+end
+local function slot_contains(slotname,id)
+    local old=equip_snapshot(slotname)
+    if old.slot<=0 then return false end
+    local item=windower.ffxi.get_items(old.bag,old.slot)
+    return type(item)=='table' and item.id==id
+end
+local function ring_in_equippable(id)
+    for _,bag in ipairs({0,8,10,11,12}) do
+        local info=windower.ffxi.get_bag_info(bag)
+        if info and info.enabled then
+            for slot,item in pairs(read_bag(bag)) do
+                if type(slot)=='number' and item and item.id==id and
+                   (item.status==0 or item.status==5) then
+                    return bag,slot,item
+                end
+            end
+        end
+    end
+end
+local function ring_in_storage(id)
+    for _,bag in ipairs({5,6,7}) do
+        local info=windower.ffxi.get_bag_info(bag)
+        if info and info.enabled then
+            for slot,item in pairs(read_bag(bag)) do
+                if type(slot)=='number' and item and item.id==id and item.status==0 then
+                    return bag,slot,item
+                end
+            end
+        end
+    end
+end
+local function clear_recovery()
+    settings.ring_recovery=nil
+    settings:save('all')
+end
+
 local function store()
     settings:save('all')
 end
@@ -304,12 +448,181 @@ local function issue(a,now)
     pending=a
     return true
 end
+-- A strictly serialized ring cycle. Inventory operations stay suspended while
+-- the ring is being prepared/used/restored. No GearSwap integration is assumed.
+-- A recovery snapshot is saved before equipment mutation for zone/reload recovery.
+local function begin_ring(query)
+    if ring_job then say('A ring operation is already in progress.') return end
+    if not safe() or pending then say('Finish the current transfer and leave menus/combat before using a ring.') return end
+    local chosen=choose_ring(query)
+    if not chosen then return end
+    local id=chosen.id
+    local equipping,slot,item=ring_in_equippable(id)
+    local source=equipping
+    if not source then
+        source=ring_in_storage(id)
+        if not source then say('Ring not accessible: '..chosen.name) return end
+        if not bag_ready('inventory') then say('Inventory full; cannot retrieve '..chosen.name) return end
+    end
+    local previous=temporary[tostring(id)]
+    temporary[tostring(id)]=math.max(tonumber(previous) or 0,1)
+    manual=nil -- a ring workflow owns the transfer pipeline until complete
+    local already=slot_contains('left_ring',id) and 'left_ring'
+               or slot_contains('right_ring',id) and 'right_ring'
+    ring_job={id=id, name=chosen.name, origin=source, stage=already and 'ready' or (equipping and 'equip' or 'retrieve'),
+              slotname=already, original=nil, previous=previous,
+              started=os.time(), stage_at=os.time(), equipping_bag=equipping,
+              use_sent_at=nil, before_charges=nil}
+    say(('Matched \"%s\" -> %s (%.0f%%). Preparing.'):format(query,chosen.name,chosen.score*100))
+end
+
+local function finish_ring(message)
+    if not ring_job then return end
+    local job=ring_job
+    temporary[tostring(job.id)]=job.previous
+    if job.previous==nil then temporary[tostring(job.id)]=nil end
+    ring_job=nil
+    clear_recovery()
+    say(message)
+end
+
+local function run_ring(now)
+    local job=ring_job
+    if not job then return end
+    if job.stage=='retrieve' then
+        if ring_in_equippable(job.id) then
+            job.stage='equip'; job.stage_at=now; return
+        end
+        if now-job.stage_at>25 then finish_ring('Could not retrieve '..job.name..' (timeout).') return end
+        local bag,slot,item=ring_in_storage(job.id)
+        if not bag then finish_ring('Ring source is no longer available.') return end
+        if now-last_attempt<2 then return end
+        issue({itemid=job.id,source=bag,dest=0,slot=slot,count=1,reason='ring use'},now)
+        return
+    elseif job.stage=='equip' then
+        local bag,slot,item=ring_in_equippable(job.id)
+        if not bag then finish_ring('Ring not available for equip.') return end
+        if slot_contains('left_ring',job.id) then job.slotname='left_ring';job.stage='ready';job.stage_at=now;return end
+        if slot_contains('right_ring',job.id) then job.slotname='right_ring';job.stage='ready';job.stage_at=now;return end
+        -- Choose an empty ring slot if possible; otherwise temporarily replace left.
+        local l=equip_snapshot('left_ring')
+        local r=equip_snapshot('right_ring')
+        job.slotname=l.slot==0 and 'left_ring' or (r.slot==0 and 'right_ring' or 'left_ring')
+        job.original=equip_snapshot(job.slotname)
+        job.stage='wait_equip';job.stage_at=now
+        settings.ring_recovery={itemid=job.id,slotname=job.slotname,
+            oldslot=job.original.slot,oldbag=job.original.bag,origin=job.origin}
+        store()
+        local slot_id=job.slotname=='left_ring' and 13 or 14
+        local ok,err=pcall(windower.ffxi.set_equip,slot,slot_id,bag)
+        if not ok then finish_ring('Equip failed: '..tostring(err)) return end
+        say('Equipping '..job.name..' in '..job.slotname..'.')
+        return
+    elseif job.stage=='wait_equip' then
+        if slot_contains(job.slotname,job.id) then
+            job.stage='ready';job.stage_at=now;return
+        end
+        if now-job.stage_at>12 then job.stage='restore';say('Equip not confirmed; restoring prior ring.') end
+        return
+    elseif job.stage=='ready' then
+        if not job.slotname or not slot_contains(job.slotname,job.id) then
+            job.stage='restore';say('Ring changed before activation; restoring previous equipment.') return
+        end
+        local bag,slot,item=ring_in_equippable(job.id)
+        if not bag or not item then job.stage='restore';return end
+        local ok,ext=pcall(extdata.decode,item)
+        if not ok or type(ext)~='table' or ext.type~='Enchanted Equipment' then
+            job.stage='restore';say('Cannot verify enchantment readiness for '..job.name..'.') return
+        end
+        if ext.charges_remaining and ext.charges_remaining<=0 then
+            job.stage='restore';say('No enchantment charges left on '..job.name..'.') return
+        end
+        if ext.usable then
+            job.before_charges=ext.charges_remaining
+            job.before_next_use=ext.next_use_time
+            job.stage='using';job.stage_at=now;job.use_sent_at=now
+            windower.send_command('input /item "'..job.name..'" <me>')
+            say('Using '..job.name..'. Waiting for activation before restoring gear.')
+            return
+        end
+        if now-job.stage_at>35 then
+            job.stage='restore';say('Enchantment not ready after 35s; use cancelled.') return
+        end
+        return
+    elseif job.stage=='using' then
+        local bag,slot,item=ring_in_equippable(job.id)
+        if bag and item then
+            local ok,ext=pcall(extdata.decode,item)
+            if ok and type(ext)=='table' and
+               ((job.before_charges and ext.charges_remaining and ext.charges_remaining<job.before_charges)
+                or (job.before_next_use and ext.next_use_time and ext.next_use_time~=job.before_next_use)) then
+                job.stage='after_use';job.stage_at=now
+                say('Ring activation observed; allowing use animation to finish before restoring.')
+                return
+            end
+        end
+        if now-job.use_sent_at>30 then
+            job.stage='restore'; job.stage_at=now
+            say('Activation not confirmed. Restoring gear; check whether the ring activated.')
+        end
+        return
+    elseif job.stage=='after_use' then
+        if now-job.stage_at>=3 then job.stage='restore';job.stage_at=now end
+        return
+    elseif job.stage=='restore' then
+        if job.original then
+            if slot_contains(job.slotname,job.id) then
+                local old=job.original
+                local slot_id=job.slotname=='left_ring' and 13 or 14
+                local ok,err=pcall(windower.ffxi.set_equip,old.slot,slot_id,old.bag)
+                if not ok then say('Could not restore prior ring: '..tostring(err)) return end
+                job.stage='wait_restore';job.stage_at=now
+                return
+            end
+            -- Someone changed the ring slot; don't overwrite their new gear.
+        end
+        job.stage='stow';job.stage_at=now;return
+    elseif job.stage=='wait_restore' then
+        local old=job.original
+        local snap=equip_snapshot(job.slotname)
+        if snap.slot==old.slot and snap.bag==old.bag then
+            job.stage='stow';job.stage_at=now;return
+        end
+        if now-job.stage_at>12 then
+            say('Prior equipment restoration unconfirmed; leaving ring in place for manual recovery.')
+            finish_ring('Stopped: prior equipment restoration needs checking.')
+        end
+        return
+    elseif job.stage=='stow' then
+        if not ring_sources[job.origin] or job.origin==0 then
+            finish_ring(job.name..' cycle finished; original item location preserved.')
+            return
+        end
+        if total(0,job.id)==0 then finish_ring(job.name..' returned to its source bag.') return end
+        if not bag_ready(bag_display(job.origin)) then
+            finish_ring('No space in original bag; '..job.name..' remains in inventory.')
+            return
+        end
+        local ss=stacks(0,job.id)
+        if #ss==0 then
+            if now-job.stage_at>12 then
+                finish_ring('Unable to return '..job.name..' (still equipped/locked).')
+            end
+            return
+        end
+        if now-last_attempt<2 then return end
+        issue({itemid=job.id,source=0,dest=job.origin,slot=ss[1].slot,count=1,reason='ring return'},now)
+        return
+    end
+end
+
 local function tick()
     local now=os.time()
     if now==last_scan then return end
     last_scan=now
     if not safe() then return end
     if settle_pending(now) then return end
+    if ring_job then run_ring(now); return end
     if not settings.cleanupmode and not manual then return end
     if now-last_attempt<math.max(1,tonumber(settings.delay) or 2) then return end
     local actions,notices=plan(type(manual)=='number' and manual or nil)
@@ -340,6 +653,7 @@ local function show_status()
     say(('Mode: %s; dump: %s; homes: %d; inventory overrides: %d; delay: %ss.'):
         format(settings.cleanupmode and 'ON' or 'OFF',settings.dumpbag,h,n,tostring(settings.delay)))
     if pending then say('Waiting for transfer confirmation: '..label(pending.itemid)) end
+    if ring_job then say('Ring operation: '..ring_job.name..' ['..ring_job.stage..']') end
     if manual then say('Manual operation active.') end
 end
 local function list_rules()
@@ -390,10 +704,20 @@ local function set_rule(args)
     store()
     blocked={}
 end
+local function set_cleanup_mode(value)
+    settings.cleanupmode=value
+    store()
+    manual=nil
+    if not value and not ring_job then pending=nil end -- an active ring transaction retains its own transfer confirmation
+    say('Automatic cleanup '..(value and 'ON (unassigned items go to '..settings.dumpbag..')'
+        or 'OFF (new automatic moves stopped)'))
+end
 local function handle(command,...)
     local args={...}
-    command=command and command:lower() or 'help'
-    if command=='help' or command=='' then
+    command=command and command:lower() or ''
+    if command=='' or command==nil then
+        set_cleanup_mode(not settings.cleanupmode)
+    elseif command=='help' then
         show_help()
     elseif command=='status' then show_status()
     elseif command=='list' then list_rules()
@@ -403,13 +727,17 @@ local function handle(command,...)
         if name=='inventory' or not bags[name] then say('Use //cu dump satchel|sack|case') return end
         settings.dumpbag=name;store();blocked={}
         say('Default dump bag: '..name)
-    elseif command=='cleanupmode' then
+    elseif command=='cleanupmode' or command=='cleanup' then
         local value=table.concat(args,' '):lower()
-        if value~='on' and value~='off' then say('Usage: //cu cleanupmode on|off') return end
-        settings.cleanupmode=value=='on';store();manual=nil
-        if not settings.cleanupmode then pending=nil end -- an issued transfer may still finish server-side
-        say('Automatic cleanup '..(settings.cleanupmode and 'ON (unassigned items will go to '..settings.dumpbag..')' or 'OFF (new automatic transfers stopped)'))
+        if value=='' and command=='cleanup' then
+            set_cleanup_mode(not settings.cleanupmode)
+        elseif value=='on' or value=='off' then
+            set_cleanup_mode(value=='on')
+        else
+            say('Usage: //cu cleanup [on|off]  (or //cu cleanupmode on|off)')
+        end
     elseif command=='tidy' or command=='apply' then
+        if ring_job then say('Ring operation active; retry tidy when it finishes.') return end
         manual='all';say('Manual cleanup requested. Use //cu cleanupmode off to stop after current transfer.')
     elseif command=='delay' then
         if #args==0 then say('Transfer delay: '..tostring(settings.delay)..'s') return end
@@ -448,8 +776,41 @@ local function handle(command,...)
         if value=='on' or value=='off' then settings.debug=value=='on';store() end
         say('Debug '..(settings.debug and 'ON' or 'OFF'))
     elseif command=='off' then
-        settings.cleanupmode=false;store();manual=nil;pending=nil
-        say('Automatic cleanup OFF; no new transfers will be started.')
+        set_cleanup_mode(false)
+    elseif command=='recover' then
+        local r=settings.ring_recovery
+        if not r then say('No interrupted ring recovery saved.') return end
+        if ring_job then say('Finish the active ring operation first.') return end
+        if not safe() then say('Try recovery when idle and out of menus.') return end
+        local name=r.slotname
+        if name~='left_ring' and name~='right_ring' then say('Invalid saved ring slot; no changes made.') return end
+        if not slot_contains(name,r.itemid) then
+            say('Ring slot changed since interruption; not overwriting it.')
+            clear_recovery();return
+        end
+        local slot_id=name=='left_ring' and 13 or 14
+        local ok,err=pcall(windower.ffxi.set_equip,r.oldslot,slot_id,r.oldbag)
+        if ok then
+            ring_job={id=r.itemid,name=label(r.itemid),origin=r.origin,stage='wait_restore',
+                stage_at=os.time(),slotname=name,original={slot=r.oldslot,bag=r.oldbag}}
+            say('Restoring the saved ring slot, then attempting to return the item to its source bag.')
+        else say('Recovery failed: '..tostring(err)) end
+    elseif command=='find' then
+        local query=clean_name(table.concat(args,' '))
+        if query=='' then say('Usage: //cu find <item name>') return end
+        local ranked=ring_matches(query)
+        if #ranked==0 then say('No supported rings in accessible bags.') return end
+        help_divider(); help_heading('Owned enchantment ring matches')
+        for i=1,math.min(5,#ranked) do
+            local entry=ranked[i]
+            emit('  '..color(entry.name,207)..' '..color('->',200)..' '..
+                color(('%d%% match'):format(math.floor(entry.score*100)),0))
+        end
+        help_divider()
+    elseif command=='use' then
+        local query=clean_name(table.concat(args,' '))
+        if query=='' then say('Usage: //cu use <item>') return end
+        begin_ring(query)
     elseif command=='restart' then
         say('Restarting CleanUp.')
         reset_run()
@@ -468,19 +829,35 @@ local function handle(command,...)
         if #args >= 1 and bags[trailing] then
             table.insert(args,1,command)
             set_rule(args)
+        elseif #args>=1 then
+            begin_ring(table.concat({command, unpack(args)},' '))
         else
-            say('Unknown command: '..command)
-            show_help()
+            begin_ring(command)
         end
     end
 end
 
 windower.register_event('addon command',handle)
 windower.register_event('prerender',tick)
-windower.register_event('zone change',function() reset_run() end)
+windower.register_event('zone change',function()
+    reset_run()
+    if ring_job and (ring_job.stage=='using' or ring_job.stage=='ready' or ring_job.stage=='after_use') then
+        ring_job.stage='restore'
+        ring_job.stage_at=os.time()
+        say('Zone change: will restore ring equipment after zoning.')
+    elseif ring_job then
+        -- Keep the recovery snapshot, but stop issuing ring requests during zoning.
+        ring_job.stage='restore'
+        ring_job.stage_at=os.time()
+    end
+end)
 windower.register_event('logout',function() reset_run() end)
 windower.register_event('unload',function() reset_run() end)
 windower.register_event('login',function()
     reset_run()
     say('Loaded. Cleanup '..(settings.cleanupmode and 'ON' or 'OFF')..'. Use //cu preview before enabling.')
+    if settings.ring_recovery then
+        say('Previous ring operation interrupted. Saved ring slot recovery: '..
+            tostring(settings.ring_recovery.slotname)..'. Use //cu recover to retry.')
+    end
 end)
