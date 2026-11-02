@@ -40,7 +40,14 @@ This project adopts the BattleStations-inspired output convention from the curre
 - All user-facing output goes to `windower.add_to_chat(0, line)` (not the addon console).
 - Separators **140**; headings **167**; `//cu` and `->` arrows **200**; command syntax **207**; descriptive text **0** (neutral white).
 - Help must show full `//cu command` examples in stable order, with `<required>` and `[optional]` parameters.
-- Bare `//cu` and invalid subcommands show the full help menu; `status`, `help`, `restart`, and `unload` are available.
+- Bare `//cu` intentionally toggles cleanup mode as of beta 2 (documented primary-action exception); `//cu help` and invalid subcommands show the full help menu; `status`, `help`, `restart`, and `unload` are available.
 - Restart/unload emit one clear announcement and dispatch exactly one Windower lifecycle command.
 
 The initial beta 1 condensed copy omitted this specific formatting contract; the beta 1.1 patch adopts it explicitly. Consult the **full** canonical NPCMirror workflow directly on GitHub at the start of future changes; this project-specific document is not a substitute.
+
+## ENCHANTMENT TESTING (beta 2)
+
+- Ring use is an explicit user action, never a side effect of cleanup rules. Supported item names initially: Echad Ring, Warp Ring.
+- Match only accessible owned rings, reject ambiguous fuzzy results; do not invent an unobserved state or assume `send_command` means item activation succeeded.
+- If temporarily equipping a ring, save its prior equipment slot and originating bag before mutation; restore after observed activation where possible. Keep a recovery path for interrupted operations and zoning.
+- Do not claim GearSwap interoperability until tested with a cooperative equip lock/handoff. The first implementation uses native Windower equipment APIs and is intended for tests with other equipment automation unloaded.
