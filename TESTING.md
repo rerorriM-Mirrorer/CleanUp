@@ -1,8 +1,30 @@
 # TESTING — CleanUp
 
+## Current Development Status — 2026-11-02 (beta 2)
+
+- **Repository / branch:** `rerorriM-Mirrorer/CleanUp` / `dev` beta 2 publication; trusted `main` remains documentation-only pending FFXI acceptance.
+- **Source checkpoint:** beta 1.1 on `dev` (CleanUp.lua blob `ecb7914f1e106ad8406fb7f8eebef917c04bf7e9`). No live-confirmed known-good code version. Beta 2 is published to `dev`; final remote HEAD is reported at delivery, not embedded in its own TESTING file.
+- **Requested functionality:** Bare `//cu` and `//cu cleanup` toggle, explicit `on/off`; owned-ring fuzzy match; use Echad/Warp Ring via temporary retrieve/equip/activation, restore original ring and return to original bag, recover interruption.
+- **Local checks:** Lua 5.4 C-library parser PASS; simulated Windower event/bag/equipment harness covers bare toggle, cleanup aliases, fuzzy `ech ring`/`warp ring`, one item command per ring, and successful return of ring to its original bag, and a simulated Warp Ring zone change. Tests run against mock state; no actual FFXI/Windower action verified.
+- **External dependencies:** Windower 4 native `set_equip`, `get_items().equipment`, `extdata.decode` and the game's `/item` command. GearSwap (and its user-script re-equip behavior) not integrated or tested.
+- **Live status:** NOT TESTED. Strongest concerns: enchantment activation/cooldown timing, detecting charge use, Warp Ring zoning, restoration after partial failure, gear equipment competition, missing storage capacity, and actual chat coloring.
+- **Next:** With other movers/GearSwap unloaded, `//cu help`, `//cu status`, `//cu preview`; use `//cu find ech ring`, `//cu ech ring` then check original ring slot and original bag. Test Warp Ring separately after confirming Echad, including zoning and `//cu recover` if needed. Record exact observed state, logs, and items.
+
+---
+
+## Beta 2 test record — 2026-11-02
+
+- User requested intentional bare-command toggle despite default shared help convention; also `//cu cleanup` and Superwarp-inspired fuzzy item name matching for Echad Ring/Warp Ring, temporary equip/use and returning ring/equipment to original locations.
+- No new settings defaults are activated automatically on startup. The toggle is **interactive**, never load-time.
+- Match scoring is local to owned supported rings, with confidence/ambiguity rejection. Item home and reserve rules remain separate.
+- New `ring_recovery` saved only for an in-flight equipment replacement; not an additional permanent item policy. A ring run suspends ordinary cleanup transfers until finished. No shared operation lock with external addons.
+- Mocked tests include a simulated Warp Ring zone change and ambiguity rejection. These are static/simulation, not live acceptance. `tests/mock_test.lua` captures the scenarios; Lua 5.1 runtime compatibility still requires direct verification.
+
+---
+
 ## Current Development Status — 2026-11-02 (beta 1.1)
 
-- **Repository / branch:** `rerorriM-Mirrorer/CleanUp` / `dev` holds beta 1.1 source; `main` remains documentation-only until live confirmation. MogMover remains unchanged.
+- **Repository / branch:** `rerorriM-Mirrorer/CleanUp` / `main` exists but is empty as checked on 2026-11-02; the test ZIP is a local working artifact, not a published Git commit. MogMover remains unchanged.
 - **Change:** BattleStations-inspired chat-only formatting per the canonical NPCMirror workflow: colored separators/headings/`//cu`/arrows/command syntax/descriptions; bare and invalid command help; restart/unload.
 - **Starting tested source:** local CleanUp beta 1 package; no known-good live version is recorded.
 - **Verification:** Lua 5.4 parser accepted code and test script; mocked Lua execution passed original inventory scenarios plus exact chat-mode and color checks, bare/invalid help, and one-shot lifecycle dispatch. Lua 5.1 compiler and Windower/FFXI live tests not performed.
@@ -29,7 +51,7 @@
 - **Static check:** The Lua source passed a syntax load through locally available Lua 5.4 C-library parser. Lua 5.1/Windower compatibility **has not been independently compiler-verified**.
 - **Mocked execution:** A simulated Windower environment and bag inventory passed checks for default-off, non-mutating preview, home assignment, keeping 2 food in inventory, moving unassigned items to Case, reserve replenishment, temporary get/release, explicit mode-off, busy state suppression, and manually triggered tidy. These are simulated, not FFXI server tests.
 - **Live test:** **NOT PERFORMED.** No real-game behavior or conflict safety confirmed.
-- **Commits/pushes:** Beta 1.1 source published on `dev`; see delivery message / GitHub history for the final remote commit SHA. No known-good release tag assigned.
+- **Commits/pushes:** Local test package created; see delivery message for actual remote status. No known-good release tag assigned.
 
 ## Priority live test
 
@@ -56,10 +78,3 @@
 - **2026-11-01 beta 1:** New isolated CleanUp addon and initial documentation. Simulation succeeded; live testing pending.
 
 - **2026-11-02 beta 1.1:** Corrected shared chat/help conventions and added lifecycle commands; local ZIP only, static/mock verified, not live tested.
-
-## GitHub publication — 2026-11-02
-
-- Initialized `main` with project documentation only. Beta 1.1 code, README, WORKFLOW, TESTING and AGENTS are on development branch `dev`.
-- Reviewed the beta 1.1 ZIP and directly re-ran a Lua 5.4 syntax parse: PASS. Existing mocked tests are recorded above, but were not re-run for this publication.
-- This publication does not establish Windower 4 / FFXI live acceptance; do not merge to `main` before live verification.
-- Preserve the original beta 1.1 user-testing package, with its earlier local-package status, as a historical artifact. Updated source docs on `dev` reflect this publication.
